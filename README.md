@@ -2,7 +2,7 @@
 
 [![CICD](https://github.com/sharkdp/fd/actions/workflows/CICD.yml/badge.svg)](https://github.com/sharkdp/fd/actions/workflows/CICD.yml)
 [![Version info](https://img.shields.io/crates/v/fd-find.svg)](https://crates.io/crates/fd-find)
-[[中文](https://github.com/chinanf-boy/fd-zh)]
+[[中文](https://github.com/cha0ran/fd-zh)]
 [[한국어](https://github.com/spearkkk/fd-kor)]
 
 `fd` is a program to find entries in your filesystem.
@@ -10,17 +10,14 @@ It is a simple, fast and user-friendly alternative to [`find`](https://www.gnu.o
 While it does not aim to support all of `find`'s powerful functionality, it provides sensible
 (opinionated) defaults for a majority of use cases.
 
-Quick links:
-* [How to use](#how-to-use)
-* [Installation](#installation)
-* [Troubleshooting](#troubleshooting)
+[Installation](#installation) • [How to use](#how-to-use) • [Troubleshooting](#troubleshooting)
 
 ## Features
 
 * Intuitive syntax: `fd PATTERN` instead of `find -iname '*PATTERN*'`.
 * Regular expression (default) and glob-based patterns.
 * [Very fast](#benchmark) due to parallelized directory traversal.
-* Uses colors to highlight different file types (same as *ls*).
+* Uses colors to highlight different file types (same as `ls`).
 * Supports [parallel command execution](#command-execution)
 * Smart case: the search is case-insensitive by default. It switches to
   case-sensitive if the pattern contains an uppercase
@@ -63,7 +60,7 @@ X11/xinit/xinitrc
 X11/xinit/xserverrc
 ```
 
-The regular expression syntax used by `fd` is [documented here](https://docs.rs/regex/1.0.0/regex/#syntax).
+The regular expression syntax used by `fd` is [documented here](https://docs.rs/regex/latest/regex/#syntax).
 
 ### Specifying the root directory
 
@@ -143,14 +140,14 @@ target/debug/deps/libnum_cpus-f5ce7ef99006aa05.rlib
 ```
 
 To really search *all* files and directories, simply combine the hidden and ignore features to show
-everything (`-HI`).
+everything (`-HI`) or use `-u`/`--unrestricted`.
 
 ### Matching the full path
 By default, *fd* only matches the filename of each file. However, using the `--full-path` or `-p` option,
 you can match against the full path.
 
 ```bash
-> fd -p -g '**/.git/config'
+> fd -u -p -g '**/.git/config'
 > fd -p '.*/lesson-\d+/[a-z]+.(jpg|png)'
 ```
 
@@ -179,6 +176,12 @@ fd -e h -e cpp -x clang-format -i
 Note how the `-i` option to `clang-format` can be passed as a separate argument. This is why
 we put the `-x` option last.
 
+Any positional arguments after `-x` belong to the command template, not to `fd` itself. If you
+also want to pass a pattern or search path, put `-x` last:
+``` bash
+fd pattern path -x echo
+```
+
 Find all `test_*.py` files and open them in your favorite editor:
 ``` bash
 fd -g 'test_*.py' -X vim
@@ -194,6 +197,11 @@ fd … -X ls -lhd --color=always
 This pattern is so useful that `fd` provides a shortcut. You can use the `-l`/`--list-details`
 option to execute `ls` in this way: `fd … -l`.
 
+The `-X` option is also useful when combining `fd` with [ripgrep](https://github.com/BurntSushi/ripgrep/) (`rg`) in order to search within a certain class of files, like all C++ source files:
+```bash
+fd -e cpp -e cxx -e h -e hpp -X rg 'std::cout'
+```
+
 Convert all `*.jpg` files to `*.png` files:
 ``` bash
 fd -e jpg -x convert {} {.}.png
@@ -201,10 +209,20 @@ fd -e jpg -x convert {} {.}.png
 Here, `{}` is a placeholder for the search result. `{.}` is the same, without the file extension.
 See below for more details on the placeholder syntax.
 
+The terminal output of commands run from parallel threads using `-x` will not be interlaced or garbled,
+so `fd -x` can be used to rudimentarily parallelize a task run over many files.
+An example of this is calculating the checksum of each individual file within a directory.
+``` bash
+fd -tf -x md5sum > file_checksums.txt
+```
+
 #### Placeholder syntax
 
 The `-x` and `-X` options take a *command template* as a series of arguments (instead of a single string).
 If you want to add additional options to `fd` after the command template, you can terminate it with a `\;`.
+
+For example, `fd -x echo \; pattern path` treats `pattern path` as `fd` arguments instead of
+passing them to `echo`. In practice, it is often clearer to write `fd pattern path -x echo`.
 
 The syntax for generating commands is similar to that of [GNU Parallel](https://www.gnu.org/software/parallel/):
 
@@ -249,11 +267,16 @@ To make exclude-patterns like these permanent, you can create a `.fdignore` file
 /mnt/external-drive
 *.bak
 ```
-Note: `fd` also supports `.ignore` files that are used by other programs such as `rg` or `ag`.
+
+> [!NOTE]
+> `fd` also supports `.ignore` files that are used by other programs such as `rg` or `ag`.
 
 If you want `fd` to ignore these patterns globally, you can put them in `fd`'s global ignore file.
 This is usually located in `~/.config/fd/ignore` in macOS or Linux, and `%APPDATA%\fd\ignore` in
 Windows.
+
+You may wish to include `.git/` in your `fd/ignore` file so that `.git` directories, and their contents
+are not included in output if you use the `--hidden` option.
 
 ### Deleting files
 
@@ -272,7 +295,8 @@ option:
 If you also want to remove a certain class of directories, you can use the same technique. You will
 have to use `rm`s `--recursive`/`-r` flag to remove directories.
 
-Note: there are scenarios where using `fd … -X rm -r` can cause race conditions: if you have a
+> [!NOTE]
+> There are scenarios where using `fd … -X rm -r` can cause race conditions: if you have a
 path like `…/foo/bar/foo/…` and want to remove all directories named `foo`, you can end up in a
 situation where the outer `foo` directory is removed first, leading to (harmless) *"'foo/bar/foo':
 No such file or directory"* errors in the `rm` call.
@@ -283,100 +307,103 @@ This is the output of `fd -h`. To see the full set of command-line options, use 
 also includes a much more detailed help text.
 
 ```
-USAGE:
-    fd [FLAGS/OPTIONS] [<pattern>] [<path>...]
+Usage: fd [OPTIONS] [pattern] [path]...
 
-FLAGS:
-    -H, --hidden            Search hidden files and directories
-    -I, --no-ignore         Do not respect .(git|fd)ignore files
-    -s, --case-sensitive    Case-sensitive search (default: smart case)
-    -i, --ignore-case       Case-insensitive search (default: smart case)
-    -g, --glob              Glob-based search (default: regular expression)
-    -a, --absolute-path     Show absolute instead of relative paths
-    -l, --list-details      Use a long listing format with file metadata
-    -L, --follow            Follow symbolic links
-    -p, --full-path         Search full path (default: file-/dirname only)
-    -0, --print0            Separate results by the null character
-    -h, --help              Prints help information
-    -V, --version           Prints version information
+Arguments:
+  [pattern]  the search pattern (a regular expression, unless '--glob' is used; optional)
+  [path]...  the root directories for the filesystem search (optional, requires pattern first)
 
-OPTIONS:
-    -d, --max-depth <depth>            Set maximum search depth (default: none)
-    -t, --type <filetype>...           Filter by type: file (f), directory (d), symlink (l),
-                                       executable (x), empty (e), socket (s), pipe (p)
-    -e, --extension <ext>...           Filter by file extension
-    -x, --exec <cmd>                   Execute a command for each search result
-    -X, --exec-batch <cmd>             Execute a command with all search results at once
-    -E, --exclude <pattern>...         Exclude entries that match the given glob pattern
-    -c, --color <when>                 When to use colors: never, *auto*, always
-    -S, --size <size>...               Limit results based on the size of files.
-        --changed-within <date|dur>    Filter by file modification time (newer than)
-        --changed-before <date|dur>    Filter by file modification time (older than)
-
-ARGS:
-    <pattern>    the search pattern - a regular expression unless '--glob' is used (optional)
-    <path>...    the root directory for the filesystem search (optional)
+Options:
+  -H, --hidden                     Search hidden files and directories
+  -I, --no-ignore                  Do not respect .(git|fd)ignore files
+  -s, --case-sensitive             Case-sensitive search (default: smart case)
+  -i, --ignore-case                Case-insensitive search (default: smart case)
+  -g, --glob                       Glob-based search (default: regular expression)
+  -a, --absolute-path              Show absolute instead of relative paths
+  -l, --list-details               Use a long listing format with file metadata
+  -L, --follow                     Follow symbolic links
+  -p, --full-path                  Search full abs. path (default: filename only)
+  -d, --max-depth <depth>          Set maximum search depth (default: none)
+  -E, --exclude <glob>             Exclude entries that match the given glob pattern
+  -t, --type <filetype>            Filter by type: file (f), directory (d/dir), symlink (l),
+                                   executable (x), empty (e), socket (s), pipe (p), char-device
+                                   (c), block-device (b)
+  -e, --extension <ext>            Filter by extension
+  -S, --size <size>                Limit results based on the size of files
+      --changed-within <date|dur>  Filter by file modification time (newer than)
+      --changed-before <date|dur>  Filter by file modification time (older than)
+  -o, --owner <user:group>         Filter by owning user and/or group
+      --format <fmt>               Print results according to template
+  -x, --exec <cmd>...              Execute a command for each search result
+  -X, --exec-batch <cmd>...        Execute a command with all search results at once
+  -c, --color <when>               When to use colors [default: auto] [possible values: auto,
+                                   always, never]
+      --hyperlink[=<when>]         Add hyperlinks to output paths [default: never] [possible
+                                   values: auto, always, never]
+      --ignore-contain <name>      Ignore directories containing the named entry
+  -h, --help                       Print help (see more with '--help')
+  -V, --version                    Print version
 ```
+
+Note that options can be given after the pattern and/or path as well.
 
 ## Benchmark
 
-Let's search my home folder for files that end in `[0-9].jpg`. It contains ~190.000
-subdirectories and about a million files. For averaging and statistical analysis, I'm using
+Let's search my home folder for files that end in `[0-9].jpg`. It contains ~750,000
+subdirectories and about a 4 million files. For averaging and statistical analysis, I'm using
 [hyperfine](https://github.com/sharkdp/hyperfine). The following benchmarks are performed
 with a "warm"/pre-filled disk-cache (results for a "cold" disk-cache show the same trends).
 
 Let's start with `find`:
 ```
-Benchmark #1: find ~ -iregex '.*[0-9]\.jpg$'
-
-  Time (mean ± σ):      7.236 s ±  0.090 s
-
-  Range (min … max):    7.133 s …  7.385 s
+Benchmark 1: find ~ -iregex '.*[0-9]\.jpg$'
+  Time (mean ± σ):     19.922 s ±  0.109 s
+  Range (min … max):   19.765 s … 20.065 s
 ```
 
 `find` is much faster if it does not need to perform a regular-expression search:
 ```
-Benchmark #2: find ~ -iname '*[0-9].jpg'
-
-  Time (mean ± σ):      3.914 s ±  0.027 s
-
-  Range (min … max):    3.876 s …  3.964 s
+Benchmark 2: find ~ -iname '*[0-9].jpg'
+  Time (mean ± σ):     11.226 s ±  0.104 s
+  Range (min … max):   11.119 s … 11.466 s
 ```
 
-Now let's try the same for `fd`. Note that `fd` *always* performs a regular expression
-search. The options `--hidden` and `--no-ignore` are needed for a fair comparison,
-otherwise `fd` does not have to traverse hidden folders and ignored paths (see below):
+Now let's try the same for `fd`. Note that `fd` performs a regular expression
+search by default. The options `-u`/`--unrestricted` option is needed here for
+a fair comparison. Otherwise `fd` does not have to traverse hidden folders and
+ignored paths (see below):
 ```
-Benchmark #3: fd -HI '.*[0-9]\.jpg$' ~
-
-  Time (mean ± σ):     811.6 ms ±  26.9 ms
-
-  Range (min … max):   786.0 ms … 870.7 ms
+Benchmark 3: fd -u '[0-9]\.jpg$' ~
+  Time (mean ± σ):     854.8 ms ±  10.0 ms
+  Range (min … max):   839.2 ms … 868.9 ms
 ```
-For this particular example, `fd` is approximately nine times faster than `find -iregex`
-and about five times faster than `find -iname`. By the way, both tools found the exact
-same 20880 files :smile:.
+For this particular example, `fd` is approximately **23 times faster** than `find -iregex`
+and about **13 times faster** than `find -iname`. By the way, both tools found the exact
+same 546 files :smile:.
 
-Finally, let's run `fd` without `--hidden` and `--no-ignore` (this can lead to different
-search results, of course). If *fd* does not have to traverse the hidden and git-ignored
-folders, it is almost an order of magnitude faster:
-```
-Benchmark #4: fd '[0-9]\.jpg$' ~
-
-  Time (mean ± σ):     123.7 ms ±   6.0 ms
-
-  Range (min … max):   118.8 ms … 140.0 ms
-```
-
-**Note**: This is *one particular* benchmark on *one particular* machine. While I have
-performed quite a lot of different tests (and found consistent results), things might
-be different for you! I encourage everyone to try it out on their own. See
+**Note**: This is *one particular* benchmark on *one particular* machine. While we have
+performed a lot of different tests (and found consistent results), things might
+be different for you! We encourage everyone to try it out on their own. See
 [this repository](https://github.com/sharkdp/fd-benchmarks) for all necessary scripts.
 
-Concerning *fd*'s speed, the main credit goes to the `regex` and `ignore` crates that are also used
-in [ripgrep](https://github.com/BurntSushi/ripgrep) (check it out!).
+Concerning *fd*'s speed, a lot of credit goes to the `regex` and `ignore` crates that are
+also used in [ripgrep](https://github.com/BurntSushi/ripgrep) (check it out!).
 
 ## Troubleshooting
+
+### `fd` does not find my file!
+
+Remember that `fd` ignores hidden directories and files by default. It also ignores patterns
+from `.gitignore` files. If you want to make sure to find absolutely every possible file, always
+use the options `-u`/`--unrestricted` option (or `-HI` to enable hidden and ignored files):
+``` bash
+> fd -u …
+```
+
+Also remember that by default, `fd` only searches based on the filename and
+doesn't compare the pattern to the full path. If you want to search based on the
+full path (similar to the `-path` option of `find`) you need to use the `--full-path`
+(or `-p`) option.
 
 ### Colorized output
 
@@ -390,15 +417,6 @@ for alternative, more complete (or more colorful) variants, see [here](https://g
 [here](https://github.com/trapd00r/LS_COLORS).
 
 `fd` also honors the [`NO_COLOR`](https://no-color.org/) environment variable.
-
-### `fd` does not find my file!
-
-Remember that `fd` ignores hidden directories and files by default. It also ignores patterns
-from `.gitignore` files. If you want to make sure to find absolutely every possible file, always
-use the options `-H` and `-I` to disable these two features:
-``` bash
-> fd -HI …
-```
 
 ### `fd` doesn't seem to interpret my regex pattern correctly
 
@@ -416,6 +434,36 @@ use a character class with a single hyphen character:
 ``` bash
 > fd -- '-pattern'
 > fd '[-]pattern'
+```
+
+### "Command not found" for `alias`es or shell functions
+
+Shell `alias`es and shell functions can not be used for command execution via `fd -x` or
+`fd -X`. In `zsh`, you can make the alias global via `alias -g myalias="…"`. In `bash`,
+you can use `export -f my_function` to make available to child processes. You would still
+need to call `fd -x bash -c 'my_function "$1"' bash`. For other use cases or shells, use
+a (temporary) shell script.
+
+### Placeholders in `-x`/`-X`
+
+Depending on your shell, you may need to quote the placeholders (`{}`, `{/}`, `{//}`,
+`{.}`, `{/.}`) to prevent the shell from interpreting them before `fd` sees them.
+
+### `fd` crashes when another memory allocator is preloaded
+
+The released Linux binaries use jemalloc, through the `use-jemalloc` feature, which is enabled by default for
+some targets. Preloading a different allocator while jemalloc is compiled in is not supported, for example
+
+``` bash
+> LD_PRELOAD=/usr/bin/mimalloc fd
+```
+
+makes the two disagree about which of them owns an allocation, and `fd` crashes. `fd` cannot detect
+this and report it, because the preloaded library is already answering its first allocation. To run
+with a preloaded allocator, build without jemalloc:
+
+``` bash
+> cargo build --release --no-default-features
 ```
 
 ## Integration with other programs
@@ -470,16 +518,17 @@ In emacs, run `M-x find-file-in-project-by-selected` to find matching files. Alt
 
 ### Printing the output as a tree
 
-To format the output of `fd` similar to the `tree` command, install [`as-tree`] and pipe the output
-of `fd` to `as-tree`:
+To format the output of `fd` as a file-tree you can use the `tree` command with
+`--fromfile`:
 ```bash
-fd | as-tree
+❯ fd | tree --fromfile
 ```
 
-This can be more useful than running `tree` by itself because `tree` does not ignore any files by
-default, nor does it support as rich a set of options as `fd` does to control what to print:
+This can be more useful than running `tree` by itself because `tree` does not
+ignore any files by default, nor does it support as rich a set of options as
+`fd` does to control what to print:
 ```bash
-❯ fd --extension rs | as-tree
+❯ fd --extension rs | tree --fromfile
 .
 ├── build.rs
 └── src
@@ -487,9 +536,10 @@ default, nor does it support as rich a set of options as `fd` does to control wh
     └── error.rs
 ```
 
-For more information about `as-tree`, see [the `as-tree` README][`as-tree`].
-
-[`as-tree`]: https://github.com/jez/as-tree
+On bash and similar you can simply create an alias:
+```bash
+❯ alias as-tree='tree --fromfile'
+```
 
 ### Using fd with `xargs` or `parallel`
 
@@ -512,7 +562,7 @@ newlines). In the same way, the `-0` option of `xargs` tells it to read the inpu
 If you run Ubuntu 19.04 (Disco Dingo) or newer, you can install the
 [officially maintained package](https://packages.ubuntu.com/fd-find):
 ```
-sudo apt install fd-find
+apt install fd-find
 ```
 Note that the binary is called `fdfind` as the binary name `fd` is already used by another package.
 It is recommended that after installation, you add a link to `fd` by executing command
@@ -522,32 +572,30 @@ Make sure that `$HOME/.local/bin` is in your `$PATH`.
 If you use an older version of Ubuntu, you can download the latest `.deb` package from the
 [release page](https://github.com/sharkdp/fd/releases) and install it via:
 ``` bash
-sudo dpkg -i fd_8.2.1_amd64.deb  # adapt version number and architecture
+dpkg -i fd_9.0.0_amd64.deb # adapt version number and architecture
 ```
+
+Note that the .deb packages on the release page for this project still name the executable `fd`.
 
 ### On Debian
 
 If you run Debian Buster or newer, you can install the
 [officially maintained Debian package](https://tracker.debian.org/pkg/rust-fd-find):
 ```
-sudo apt-get install fd-find
+apt-get install fd-find
 ```
 Note that the binary is called `fdfind` as the binary name `fd` is already used by another package.
 It is recommended that after installation, you add a link to `fd` by executing command
 `ln -s $(which fdfind) ~/.local/bin/fd`, in order to use `fd` in the same way as in this documentation.
 Make sure that `$HOME/.local/bin` is in your `$PATH`.
 
+Note that the .deb packages on the release page for this project still name the executable `fd`.
+
 ### On Fedora
 
 Starting with Fedora 28, you can install `fd` from the official package sources:
 ``` bash
 dnf install fd-find
-```
-
-For older versions, you can use this [Fedora copr](https://copr.fedorainfracloud.org/coprs/keefle/fd/) to install `fd`:
-``` bash
-dnf copr enable keefle/fd
-dnf install fd
 ```
 
 ### On Alpine Linux
@@ -560,10 +608,12 @@ apk add fd
 
 ### On Arch Linux
 
-You can install [the fd package](https://www.archlinux.org/packages/community/x86_64/fd/) from the official repos:
+You can install [the fd package](https://www.archlinux.org/packages/extra/x86_64/fd/) from the official repos:
 ```
 pacman -S fd
 ```
+You can also install fd [from the AUR](https://aur.archlinux.org/packages/fd-git).
+
 ### On Gentoo Linux
 
 You can use [the fd ebuild](https://packages.gentoo.org/packages/sys-apps/fd) from the official repo:
@@ -585,6 +635,31 @@ You can install `fd` via xbps-install:
 xbps-install -S fd
 ```
 
+### On ALT Linux
+
+You can install [the fd package](https://packages.altlinux.org/en/sisyphus/srpms/fd/) from the official repo:
+```
+apt-get install fd
+```
+
+### On Solus
+
+You can install [the fd package](https://github.com/getsolus/packages/tree/main/packages/f/fd) from the official repo:
+```
+eopkg install fd
+```
+
+### On RedHat Enterprise Linux (RHEL) 8/9/10, Almalinux 8/9/10, EuroLinux 8/9 or Rocky Linux 8/9/10
+
+You can install [the `fd` package](https://copr.fedorainfracloud.org/coprs/tkbcopr/fd/) from Fedora Copr.
+
+```bash
+dnf copr enable tkbcopr/fd
+dnf install fd
+```
+
+A different version using the [slower](https://github.com/sharkdp/fd/pull/481#issuecomment-534494592) malloc [instead of jemalloc](https://bugzilla.redhat.com/show_bug.cgi?id=2216193#c1) is also available from the EPEL8/9 repo as the package `fd-find`.
+
 ### On macOS
 
 You can install `fd` with [Homebrew](https://formulae.brew.sh/formula/fd):
@@ -594,7 +669,7 @@ brew install fd
 
 … or with MacPorts:
 ```
-sudo port install fd
+port install fd
 ```
 
 ### On Windows
@@ -611,11 +686,37 @@ Or via [Chocolatey](https://chocolatey.org):
 choco install fd
 ```
 
+Or via [Winget](https://learn.microsoft.com/en-us/windows/package-manager/):
+```
+winget install sharkdp.fd
+```
+
+### On GuixOS
+
+You can install [the fd package](https://packages.guix.gnu.org/packages/fd/) from the official repo:
+```
+guix install fd
+```
+
+### On Mise
+
+You can use [mise](https://github.com/jdx/mise) to install `fd` with a command like this:
+```
+mise use -g fd@latest
+```
+
 ### On NixOS / via Nix
 
 You can use the [Nix package manager](https://nixos.org/nix/) to install `fd`:
 ```
 nix-env -i fd
+```
+
+### Via Flox
+
+You can use [Flox](https://flox.dev) to install `fd` into a Flox environment:
+```
+flox install fd
 ```
 
 ### On FreeBSD
@@ -627,7 +728,7 @@ pkg install fd-find
 
 ### From npm
 
-On linux and macOS, you can install the [fd-find](https://npm.im/fd-find) package:
+On Linux and macOS, you can install the [fd-find](https://npm.im/fd-find) package:
 
 ```
 npm install -g fd-find
@@ -639,7 +740,7 @@ With Rust's package manager [cargo](https://github.com/rust-lang/cargo), you can
 ```
 cargo install fd-find
 ```
-Note that rust version *1.53.0* or later is required.
+Note that rust version *1.90.0* or later is required.
 
 `make` is also needed for the build.
 
@@ -662,16 +763,44 @@ cargo test
 cargo install --path .
 ```
 
+### Completions
+
+#### From Release Archives
+
+Pre-built completion files are included in the release archives (`.tar.gz`/`.zip`) on the
+[Releases page](https://github.com/sharkdp/fd/releases), in the `autocomplete` directory.
+To use these completions:
+
+- **bash**: Source the `fd.bash` file in your `~/.bashrc`, or place it in a directory that gets sourced automatically.
+- **zsh**: Move `_fd` to a directory in your `fpath` (e.g., `~/.zfunc`).
+- **fish**: Copy `fd.fish` to `~/.config/fish/completions/`.
+- **powershell**: Source `_fd.ps1` from one of your [profile scripts](https://learn.microsoft.com/en-us/powershell/scripting/learn/shell/creating-profiles?view=powershell-7.5).
+
+#### Generate from fd
+
+You can also generate completions directly using `fd --gen-completions <shell>`:
+
+```bash
+# Bash
+fd --gen-completions bash > ~/.local/share/bash-completion/completions/fd
+
+# Zsh (ensure ~/.zfunc is in your fpath)
+fd --gen-completions zsh > ~/.zfunc/_fd
+
+# Fish
+fd --gen-completions fish > ~/.config/fish/completions/fd.fish
+
+# PowerShell
+fd --gen-completions powershell >> $PROFILE
+```
+
 ## Maintainers
 
 - [sharkdp](https://github.com/sharkdp)
 - [tmccombs](https://github.com/tmccombs)
 - [tavianator](https://github.com/tavianator)
-- [pemistahl](https://github.com/pemistahl/)
 
 ## License
-
-Copyright (c) 2017-2021 The fd developers
 
 `fd` is distributed under the terms of both the MIT License and the Apache License 2.0.
 

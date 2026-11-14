@@ -22,10 +22,12 @@ _fd() {
 
   fd_types=(
     {f,file}'\:"regular files"'
-    {d,directory}'\:"directories"'
+    {d,dir,directory}'\:"directories"'
     {l,symlink}'\:"symbolic links"'
     {e,empty}'\:"empty files or directories"'
     {x,executable}'\:"executable (files)"'
+    {b,block-device}'\:"block devices"'
+    {c,char-device}'\:"character devices"'
     {s,socket}'\:"sockets"'
     {p,pipe}'\:"named pipes (FIFOs)"'
   )
@@ -36,7 +38,7 @@ _fd() {
   # for all of the potential negation options listed below!
   if
     # (--[bpsu]* => match all options marked with '$no')
-    [[ $PREFIX$SUFFIX == --[bopsu]* ]] ||
+    [[ $PREFIX$SUFFIX == --[bopsun]* ]] ||
     zstyle -t ":complete:$curcontext:*" complete-all
   then
     no=
@@ -52,11 +54,12 @@ _fd() {
 
     + '(no-ignore-full)' # all ignore files
     '(no-ignore-partial)'{-I,--no-ignore}"[don't respect .(git|fd)ignore and global ignore files]"
-    $no'(no-ignore-partial)*'{-u,--unrestricted}'[alias for --no-ignore, when repeated also alias for --hidden]'
+    $no'(no-ignore-partial)*'{-u,--unrestricted}'[alias for --no-ignore --hidden]'
 
     + no-ignore-partial # some ignore files
     "(no-ignore-full --no-ignore-vcs)--no-ignore-vcs[don't respect .gitignore files]"
     "!(no-ignore-full --no-global-ignore-file)--no-global-ignore-file[don't respect the global ignore file]"
+    "$no(no-ignore-full --no-ignore-parent)--no-ignore-parent[don't respect .(git|fd)ignore files in parent directories]"
 
     + '(case)' # case-sensitivity
     {-s,--case-sensitive}'[perform a case-sensitive search]'
@@ -68,12 +71,18 @@ _fd() {
     + '(no-regex-pattern)' # non-regex-based search pattern
     {-g,--glob}'[perform a glob-based search]'
     {-F,--fixed-strings}'[treat pattern as literal string instead of a regex]'
+    '!--literal'
+    '--exact[pattern must exactly match the full filename]'
+
+    + '(no-require-git)'
+    "$no(no-ignore-full --no-ignore-vcs --no-require-git)--no-require-git[don't require git repo to respect gitignores]"
 
     + '(match-full)' # match against full path
     {-p,--full-path}'[match the pattern against the full path instead of the basename]'
 
     + '(follow)' # follow symlinks
     {-L,--follow}'[follow symbolic links to directories]'
+    '!--dereference'
 
     + '(abs-path)' # show absolute paths
     '(long-listing)'{-a,--absolute-path}'[show absolute paths instead of relative paths]'
@@ -84,9 +93,16 @@ _fd() {
     + '(long-listing)' # long-listing output
     '(abs-path null-sep max-results exec-cmds)'{-l,--list-details}'[use a long listing format with file metadata]'
 
+    + '(output-format)' # template-based output
+    '(long-listing)--format=[print results according to template]:format'
+
     + '(max-results)' # max number of results
-    '(long-listing exec-cmds)--max-results=[limit number of search results to given count and quit]:count'
+    '(long-listing exec-cmds quiet)--max-results=[limit number of search results to given count and quit]:count'
     '(long-listing exec-cmds)-1[limit to a single search result and quit]'
+
+    + '(quiet)'
+    '(max-results)'{-q,--quiet}'[print nothing. exit code 1 if no matches]'
+    '!(max-results)--has-results'
 
     + '(fs-errors)' # file-system errors
     $no'--show-errors[enable the display of filesystem errors]'
@@ -98,8 +114,9 @@ _fd() {
 
     + dir-depth # directory depth
     '(--exact-depth -d --max-depth)'{-d+,--max-depth=}'[set max directory depth to descend when searching]:depth'
-    '!(--exact-depth -d --max-depth)--maxdepth:depth'
+    '!(--exact-depth -d --max-depth)--maxdepth=:depth'
     '(--exact-depth --min-depth)--min-depth=[set directory depth to descend before start searching]:depth'
+    '!(--exact-depth --min-depth)--mindepth=:depth'
     '(--exact-depth -d --max-depth --maxdepth --min-depth)--exact-depth=[only search at the exact given directory depth]:depth'
 
     + prune # pruning
@@ -117,6 +134,7 @@ _fd() {
 
     + '(filter-mtime-newer)' # filter by files modified after than
     '--changed-within=[limit search to files/directories modified within the given date/duration]:date or duration'
+    '--changed-after=[alias for --changed-within]:date/duration'
     '!--change-newer-than=:date/duration'
     '!--newer=:date/duration'
 
@@ -132,6 +150,9 @@ _fd() {
       always\:"always use colorized output"
     ))'
 
+    '--hyperlink=-[add hyperlinks to output paths]::when:(auto never always)'
+    '!--hyper=-'
+
     + '(threads)'
     {-j+,--threads=}'[set the number of threads for searching and executing]:number of threads'
 
@@ -143,9 +164,11 @@ _fd() {
     + other
     '!(--max-buffer-time)--max-buffer-time=[set amount of time to buffer before showing output]:time (ms)'
 
+    '*--ignore-contain=[Ignore dirs containing named file]:name'
+
     + '(about)' # about flags
     '(: * -)'{-h,--help}'[display help message]'
-    '(: * -)'{-v,--version}'[display version information]'
+    '(: * -)'{-V,--version}'[display version information]'
 
     + path-sep # set path separator for output
     $no'(--path-separator)--path-separator=[set the path separator to use when printing file paths]:path separator'
@@ -153,6 +176,13 @@ _fd() {
     + search-path
     $no'(--base-directory)--base-directory=[change the current working directory to the given path]:directory:_files -/'
     $no'(*)*--search-path=[set search path (instead of positional <path> arguments)]:directory:_files -/'
+
+    + strip-cwd-prefix
+    $no'(strip-cwd-prefix exec-cmds)--strip-cwd-prefix=-[When to strip ./]::when:(always never auto)'
+
+    + and
+    '*--and=[additional required search pattern]:pattern'
+
 
     + args # positional arguments
     '1: :_guard "^-*" pattern'
@@ -201,7 +231,7 @@ _fd() {
           'T:terabytes  (10^12 = 1000^4 bytes)'
           'Ki:kibibytes  ( 2^10 = 1024   bytes)'
           'Mi:mebibytes  ( 2^20 = 1024^2 bytes)'
-          'Gi:gigibytes  ( 2^30 = 1024^3 bytes)'
+          'Gi:gibibytes  ( 2^30 = 1024^3 bytes)'
           'Ti:tebibytes  ( 2^40 = 1024^4 bytes)'
         )
         _describe -t units 'size limit units' suff -V 'units'

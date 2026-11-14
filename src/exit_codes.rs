@@ -1,4 +1,9 @@
-#[derive(Debug, Clone, Copy, PartialEq)]
+use std::process;
+
+#[cfg(unix)]
+use nix::sys::signal::{SigHandler, Signal, raise, signal};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
     Success,
     HasResults(bool),
@@ -10,7 +15,7 @@ impl From<ExitCode> for i32 {
     fn from(code: ExitCode) -> Self {
         match code {
             ExitCode::Success => 0,
-            ExitCode::HasResults(has_results) => !has_results as i32,
+            ExitCode::HasResults(has_results) => !has_results as Self,
             ExitCode::GeneralError => 1,
             ExitCode::KilledBySigint => 130,
         }
@@ -20,6 +25,21 @@ impl From<ExitCode> for i32 {
 impl ExitCode {
     fn is_error(self) -> bool {
         i32::from(self) != 0
+    }
+
+    /// Exit the process with the appropriate code.
+    pub fn exit(self) -> ! {
+        #[cfg(unix)]
+        if self == Self::KilledBySigint {
+            // Get rid of the SIGINT handler, if present, and raise SIGINT
+            unsafe {
+                if signal(Signal::SIGINT, SigHandler::SigDfl).is_ok() {
+                    let _ = raise(Signal::SIGINT);
+                }
+            }
+        }
+
+        process::exit(self.into())
     }
 }
 

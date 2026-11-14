@@ -1,11 +1,11 @@
-use lazy_static::lazy_static;
+use std::sync::OnceLock;
+
+use anyhow::anyhow;
 use regex::Regex;
 
-lazy_static! {
-    static ref SIZE_CAPTURES: Regex = Regex::new(r"(?i)^([+-]?)(\d+)(b|[kmgt]i?b?)$").unwrap();
-}
+static SIZE_CAPTURES: OnceLock<Regex> = OnceLock::new();
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SizeFilter {
     Max(u64),
     Min(u64),
@@ -25,12 +25,19 @@ const GIBI: u64 = MEBI * 1024;
 const TEBI: u64 = GIBI * 1024;
 
 impl SizeFilter {
-    pub fn from_string(s: &str) -> Option<Self> {
-        if !SIZE_CAPTURES.is_match(s) {
+    pub fn from_string(s: &str) -> anyhow::Result<Self> {
+        Self::parse_opt(s)
+            .ok_or_else(|| anyhow!("'{}' is not a valid size constraint. See 'fd --help'.", s))
+    }
+
+    fn parse_opt(s: &str) -> Option<Self> {
+        let pattern =
+            SIZE_CAPTURES.get_or_init(|| Regex::new(r"(?i)^([+-]?)(\d+)(b|[kmgt]i?b?)$").unwrap());
+        if !pattern.is_match(s) {
             return None;
         }
 
-        let captures = SIZE_CAPTURES.captures(s)?;
+        let captures = pattern.captures(s)?;
         let limit_kind = captures.get(1).map_or("+", |m| m.as_str());
         let quantity = captures
             .get(2)
@@ -49,20 +56,21 @@ impl SizeFilter {
             _ => return None,
         };
 
-        let size = quantity * multiplier;
+        let size = quantity.checked_mul(multiplier)?;
+
         match limit_kind {
-            "+" => Some(SizeFilter::Min(size)),
-            "-" => Some(SizeFilter::Max(size)),
-            "" => Some(SizeFilter::Equals(size)),
+            "+" => Some(Self::Min(size)),
+            "-" => Some(Self::Max(size)),
+            "" => Some(Self::Equals(size)),
             _ => None,
         }
     }
 
     pub fn is_within(&self, size: u64) -> bool {
         match *self {
-            SizeFilter::Max(limit) => size <= limit,
-            SizeFilter::Min(limit) => size >= limit,
-            SizeFilter::Equals(limit) => size == limit,
+            Self::Max(limit) => size <= limit,
+            Self::Min(limit) => size >= limit,
+            Self::Equals(limit) => size == limit,
         }
     }
 }
@@ -166,7 +174,7 @@ mod tests {
                 #[test]
                 fn $name() {
                     let i = SizeFilter::from_string($value);
-                    assert!(i.is_none());
+                    assert!(i.is_err());
                 }
             )*
         };
@@ -208,5 +216,43 @@ mod tests {
     fn is_within_greater_than_equal() {
         let f = SizeFilter::from_string("+1K").unwrap();
         assert!(f.is_within(1000));
+    }
+
+    #[test]
+    fn ensure_size_multiplication_overflow_returns_error() {
+        let invalid = [
+            "+18446744073709551615k",
+            "-18446744073709551615m",
+            "18446744073709551615g",
+            "+18446744073709551615ti",
+            "-18446744073709551615tib",
+        ];
+
+        for input in invalid {
+            assert!(
+                SizeFilter::from_string(input).is_err(),
+                "Expected {input:?} to fail due to overflow"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_size_multiplication_boundary() {
+        let max_valid = u64::MAX / KILO;
+
+        assert_eq!(
+            SizeFilter::from_string(&format!("{max_valid}k")).unwrap(),
+            SizeFilter::Equals(max_valid * KILO)
+        );
+
+        assert!(SizeFilter::from_string(&format!("{}k", max_valid + 1)).is_err());
+    }
+
+    #[test]
+    fn ensure_max_u64_does_not_overflow() {
+        assert_eq!(
+            SizeFilter::from_string("18446744073709551615b").unwrap(),
+            SizeFilter::Equals(u64::MAX)
+        );
     }
 }

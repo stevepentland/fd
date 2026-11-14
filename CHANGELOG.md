@@ -1,21 +1,382 @@
 # Upcoming release
 
-## Performance improvements
-
-- File metadata is now cached between the different filters that require it (e.g. `--owner`,
-  `--size`), reducing the number of `stat` syscalls when multiple filters are used; see #863
-
 ## Features
-- Don't buffer command output from `--exec` when using a single thread. See #522
-
-- Add new `-q, --quiet` flag, see #303 (@Asha20)
-
-- Add new `--no-ignore-parent` flag, see #787 (@will459)
-
-- Add new `--batch-size` flag, see #410 (@devonhollowood)
+- Allow `--strip-cwd-prefix` with explicit search paths, see #2113 (@pederbe)
 
 ## Bugfixes
 
+
+## Changes
+- Delay-load `shell32.dll`, `combase.dll` and `advapi32.dll` in Windows MSVC builds, so most runs no longer load them (and the DLLs they pull in) at startup, see #2217 (@azchohfi)
+
+## Other
+
+# 10.5.2
+
+## Bugfixes
+- Fix invalid syntax in zsh completions. See #2216
+- Write raw bytes instead of replacing them with U+FFFD when `--format` output goes to a pipe, so filenames that are not valid UTF-8 reach downstream tools unchanged; see #2189.
+
+# 10.5.1
+
+## Bugfixes
+- Fix `--absolute-path` turning verbatim (`\\?\`) search paths into relative paths on Windows: `\\?\UNC\server\share` is now reported as `\\server\share`, and `\\?\Volume{...}` paths are kept intact, see #2207 (@Duo-ee)
+- Make `--ignore` and `--no-hidden` after `-u` override only their half of `-u`, see #2192 (@NavpreetSSidhu)
+- Fix inline case-insensitive regex flags incorrectly making other `--and` patterns case-sensitive, see #2184 (@mabunemeh)
+- Accept `--format` templates that start with `-` when passed as a separate argument, see #2126 (@vulragrag-star)
+- Don't incorrectly escape newlines in error messages, see #2104
+- Restore jemalloc as default allocator on supported systems
+- Fix the `cargo binstall` release URL, which named the crate (`fd-find`) instead of the binary (`fd`) and fell back to a third-party mirror
+- Fix integer overflow when parsing size constraints, rejecting values that exceed `u64::MAX` instead of panicking, see #2196 (@parneetsingh022).
+- Various fixes and updates to zsh completion
+- Fix --glob patterns when using --full-path on windows. See #2067.
+
+# 10.5.0
+
+## Features
+- Add `--ignore-parent` option to override `--no-ignore-parent`, see #1958 (@tmchow)
+- Add `--exact` option to match the entire filename exactly (literal, non-substring).
+
+## Bugfixes
+- Sanitize control characters and bidirectional override characters in filenames
+  when output goes to a terminal, to prevent terminal escape-sequence injection.
+  Also reject a placeholder as the executable for `--exec-batch`, while still
+  allowing it for `--exec`.
+- Fix broken symlinks being incorrectly filtered out by `--min-depth` when following links (`--follow`), because their depth was not computed; see #1017 (@hexbinoct).
+- Handle invalid working directories gracefully when using `--full-path`, see #1900 (@Xavrir).
+- Fire the "search pattern contains a path separator" diagnostic for any pattern containing `/`, not just patterns that happen to name an existing directory. Preserves the legacy Windows behaviour that also flags native `\` separators when the pattern resolves to a real directory. See #1873.
+- Also fire the "search pattern contains a path separator" diagnostic for `--and` patterns, not only the primary positional pattern. `--and` patterns are matched against the file name just like the primary pattern, so a path separator in them silently returned zero results. See #1873.
+- Fix bug where passing "-" as a directory argument didn't actually search that directory, see #849 (@Sean-Kenneth-Doherty).
+- Fix panic when `--changed-before`/`--changed-within` is given an out-of-range `@` Unix timestamp; the value is now rejected gracefully, see #2081 (@nikolauspschuetz).
+
+# 10.4.2
+
+## Bugfixes
+- Fixed performance regression due to `--ignore-contain`; see #1913 and #1914
+
+# 10.4.1
+
+This is just a re-release of 10.4.0 due to an issue with the 10.4.0 release.
+
+# 10.4.0
+
+## Features
+- Add `--ignore-contain` option to ignore directories containing a named entry (e.g. to ignore [`CACHEDIR.TAG`](https://bford.info/cachedir/)); see #1727 (@fischman).
+
+## Bugfixes
+
+- Fix Windows hyperlink generation for paths with spaces. (#1872)
+
+- `--print0` combined with `--exec` will now print a `\0` between the output of each entry. Note that if there are multiple instances
+  of `--exec`, the `\0` will be between each _set_ of commands, _not_ between each individual command run. Fixes #1797.
+
+- Several bugs were fixed by an update to the `ignore` library used for handling ignore rules
+    - #1506
+    - #1667
+    - #1813
+
+- Fix completions for alias `fdfind` in deb release, see #1888 (@skane-lukas)
+
+## Changes
+
+- Minimum required rust version has been increased to 1.90.0. Notably, this means dropping fully support for intel Mac and Windows 7.
+- Statically link the CRT for MSVC builds via Cargo config to avoid runtime DLL dependencies, see #1874 (@FidelSch)
+
+# 10.3.0
+
+## Features
+
+- Add a hidden `--mindepth` alias for `--min-depth`. (#1617)
+
+
+## Bugfixes
+
+
+## Changes
+
+- Replace `humantime` crate and `chrono` crate with `jiff` crate, see #1690 (@sorairolake). This has some small changes to the
+  way dates given to options such `--changed-within` and `--changed-before` including:
+  - 'M' no longer means "month", as that could be confusing with minutes. Use "mo", "mos", "month" or "months" instead.
+  - month and year now account for variability in the calander rather than being a hard-coded number of seconds. That is probably
+    what you would expect, but it is a slight change in behavior.
+- aarch64 Windows was added to CI and release artifacts
+- Many dependencies were updated
+- Better support building on Illumos (there is no automated testing, but some known issues were fixed)
+
+## Other
+
+This will be the last release that has been tested on x86_64 Mac OS, since GitHub is
+dropping support for runners with that hardware.
+
+It may also be the last release to use a version of Rust with tier-1 support for
+x86_64/intel Macs and Windows 7.
+
+
+# 10.2.0
+
+## Features
+
+- Add --hyperlink option to add OSC 8 hyperlinks to output
+
+
+## Bugfixes
+
+
+## Changes
+
+- Build windows releases with rust 1.77 so windows 7 is still supported
+- Deb packages now include symlink for fdfind to be more consistent with official packages
+
+
+## Other
+
+# 10.1.0
+
+## Features
+
+- Allow passing an optional argument to `--strip-cwd-prefix` of "always", "never", or "auto". to force whether the cwd prefix is stripped or not.
+- Add a `--format` option which allows using a format template for direct ouput similar to the template used for `--exec`. (#1043)
+
+## Bugfixes
+- Fix aarch64 page size again. This time it should actually work. (#1085, #1549) (@tavianator)
+
+
+## Other
+
+- aarch64-apple-darwin target added to builds on the release page. Note that this is a tier 2 rust target.
+
+# v10.0.0
+
+## Features
+
+- Add `dir` as an alias to `directory` when using `-t` \ `--type`, see #1460 and #1464 (@Ato2207).
+- Add support for @%s date format in time filters similar to GNU date (seconds since Unix epoch for --older/--newer), see #1493 (@nabellows)
+- Breaking: No longer automatically ignore `.git` when using `--hidden` with vcs ignore enabled. This reverts the change in v9.0.0. While this feature
+  was often useful, it also broke some existing workflows, and there wasn't a good way to opt out of it. And there isn't really a good way for us to add
+  a way to opt out of it. And you can easily get similar behavior by adding `.git/` to your global fdignore file.
+    See #1457.
+
+## Bugfixes
+
+- Respect NO_COLOR environment variable with `--list-details` option. (#1455)
+- Fix bug that would cause hidden files to be included despite gitignore rules
+  if search path is "." (#1461, BurntSushi/ripgrep#2711).
+- aarch64 builds now use 64k page sizes with jemalloc. This fixes issues on some systems, such as ARM Macs that
+  have a larger system page size than the system that the binary was built on. (#1547)
+- Address [CVE-2024-24576](https://blog.rust-lang.org/2024/04/09/cve-2024-24576.html), by increasing minimum rust version.
+
+
+## Changes
+- Minimum supported rust version is now 1.77.2
+
+
+# v9.0.0
+
+## Performance
+
+- Performance has been *significantly improved*, both due to optimizations in the underlying `ignore`
+  crate (#1429), and in `fd` itself (#1422, #1408, #1362) - @tavianator.
+  [Benchmarks results](https://gist.github.com/tavianator/32edbe052f33ef60570cf5456b59de81) show gains
+  of 6-8x for full traversals of smaller directories (100k files) and up to 13x for larger directories (1M files).
+
+- The default number of threads is now constrained to be at most 64. This should improve startup time on
+  systems with many CPU cores. (#1203, #1410, #1412, #1431) - @tmccombs and @tavianator
+
+- New flushing behavior when writing output to stdout, providing better performance for TTY and non-TTY
+  use cases, see #1452 and #1313 (@tavianator).
+
+## Features
+
+- Support character and block device file types, see #1213 and #1336 (@cgzones)
+- Breaking: `.git/` is now ignored by default when using `--hidden` / `-H`, use `--no-ignore` / `-I` or
+  `--no-ignore-vcs` to override, see #1387 and #1396 (@skoriop)
+
+## Bugfixes
+
+- Fix `NO_COLOR` support, see #1421 (@acuteenvy)
+
+## Other
+
+- Fixed documentation typos, see #1409 (@marcospb19)
+
+## Thanks
+
+Special thanks to @tavianator for his incredible work on performance in the `ignore` crate and `fd` itself.
+
+
+
+# v8.7.1
+
+## Bugfixes
+
+- `-1` properly conflicts with the exec family of options.
+- `--max-results` overrides `-1`
+- `--quiet` properly conflicts with the exec family of options. This used to be the case, but broke during the switch to clap-derive
+- `--changed-within` now accepts a space as well as a "T" as the separator between date and time (due to update of chrono dependency)
+
+## Other
+- Many dependencies were updated
+- Some documentation was updated and fixed
+
+# v8.7.0
+
+## Features
+
+- Add flag --no-require-git to always respect gitignore files, see #1216 (@vegerot)
+
+## Bugfixes
+
+- Fix logic for when to use global ignore file. There was a bug where the only case where the
+  global ignore file wasn't processed was if `--no-ignore` was passed, but neither `--unrestricted`
+  nor `--no-global-ignore-file` is passed. See #1209
+
+# v8.6.0
+
+## Features
+
+- New `--and <pattern>` option to add additional patterns that must also be matched. See #315
+  and #1139 (@Uthar)
+- Added `--changed-after` as alias for `--changed-within`, to have a name consistent with `--changed-before`.
+
+
+## Changes
+
+- Breaking: On Unix-like systems, `--type executable` now additionally checks if
+  the file is executable by the current user, see #1106 and #1169 (@ptipiak)
+
+
+## Bugfixes
+
+- Use fd instead of fd.exe for Powershell completions (when completions are generated on windows)
+
+
+## Other
+
+
+# v8.5.3
+
+## Bugfixes
+
+- Fix completion generation to not include full path of fd command
+- Fix build error if completions feature is disabled
+
+# v8.5.2
+
+## Bugfixes
+
+- Fix --owner option value parsing, see #1163 and #1164 (@tmccombs)
+
+
+# v8.5.1
+
+## Bugfixes
+
+- Fix --threads/-j option value parsing, see #1160 and #1162 (@sharkdp)
+
+
+# v8.5.0
+
+## Features
+
+- `--type executable`/`-t` now works on Windows, see #1051 and #1061 (@tavianator)
+
+## Bugfixes
+
+- Fixed differences between piped / non-piped output. This changes `fd`s behavior back to what we
+  had before 8.3.0, i.e. there will be no leading `./` prefixes, unless `--exec`/`-x`,
+  `--exec-batch`/`-X`, or `--print0`/`-0` are used. `--strip-cwd-prefix` can be used to strip that
+  prefix in those cases. See #1046, #1115, and #1121 (@tavianator)
+- `fd` could previously crash with a panic due to a race condition in Rusts standard library
+  (see https://github.com/rust-lang/rust/issues/39364). This has been fixed by switching to a different
+  message passing implementation, see #1060 and #1146 (@tavianator)
+- `fd`s memory usage will not grow unboundedly on huge directory trees, see #1146 (@tavianator)
+- fd returns an error when current working directory does not exist while a search path is
+  specified, see #1072 (@vijfhoek)
+- Improved "command not found" error message, see #1083 and #1109 (@themkat)
+- Preserve command exit codes when using `--exec-batch`, see #1136 and #1137 (@amesgen)
+
+## Changes
+
+- No leading `./` prefix for non-interactive results, see above.
+- fd now colorizes paths in parallel, significantly improving performance, see #1148 (@tavianator)
+- fd can now avoid `stat` syscalls even when colorizing paths, as long as the color scheme doesn't
+  require metadata, see #1148 (@tavianator)
+- The statically linked `musl` versions of `fd` now use `jmalloc`, leading to a significant performance
+  improvement, see #1062 (@tavianator)
+
+## Other
+
+- Added link back to GitHub in man page and `--help` text, see #1086 (@scottchiefbaker)
+- Major update in how `fd` handles command line options internally, see #1067 (@tmccombs)
+
+# v8.4.0
+
+## Features
+
+- Support multiple `--exec <cmd>` instances, see #406 and #960 (@tmccombs)
+
+## Bugfixes
+
+- "Argument list too long" errors can not appear anymore when using `--exec-batch`/`-X`, as the command invocations are automatically batched at the maximum possible size, even if `--batch-size` is not given. See #410 and #1020 (@tavianator)
+
+## Changes
+
+- Directories are now printed with an additional path separator at the end: `foo/bar/`, see #436 and #812 (@yyogo)
+- The `-u` flag was changed to be equivalent to `-HI` (previously, a single `-u` was only equivalent to `-I`). Additional `-u` flags are still allowed, but ignored. See #840 and #986 (@jacksontheel)
+
+## Other
+
+- Added installation instructions for RHEL8, see #989 (@ethsol)
+
+
+# v8.3.2
+
+## Bugfixes
+
+- Invalid absolute path on windows when searching from the drive root, see #931 and #936 (@gbarta)
+
+
+# v8.3.1
+
+## Bugfixes
+
+- Stop implying `--no-ignore-parent` when `--no-vcs-ignore` is supplied, see #907, #901, #908 (@tmccombs)
+- fd no longer waits for the whole traversal if the only matches arrive within max_buffer_time, see #868 and #895 (@tavianator)
+- `--max-results=1` now immediately quits after the first result, see #867
+- `fd -h` does not panic anymore when stdout is closed, see #897
+
+## Changes
+
+- Disable jemalloc on FreeBSD, see #896 (@xanderio)
+- Updated man page, see #912 (@rlue)
+- Updated zsh completions, see #932 (@tmccombs)
+
+
+# v8.3.0
+
+## Performance improvements
+
+- Colorized output is now significantly faster, see #720 and #853 (@tavianator)
+- Writing to stdout is now buffered if the output does not go to a TTY. This increases performance
+  when the output of `fd` is piped to another program or to a file, see #885 (@tmccombs, original
+  implementation by @sourlemon207)
+- File metadata is now cached between the different filters that require it (e.g. `--owner`,
+  `--size`), reducing the number of `stat` syscalls when multiple filters are used; see #863
+  (@tavianator, original implementation by @alexmaco)
+
+## Features
+
+- Don't buffer command output from `--exec` when using a single thread. See #522
+- Add new `-q, --quiet` flag, see #303 (@Asha20)
+- Add new `--no-ignore-parent` flag, see #787 (@will459)
+- Add new `--batch-size` flag, see #410 (@devonhollowood)
+- Add opposing command-line options, see #595 (@Asha20)
+- Add support for more filesystem indicators in `LS_COLORS`, see
+  https://github.com/sharkdp/lscolors/pull/35 (@tavianator)
+
+## Bugfixes
+
+- Always show the `./` prefix for search results unless the output is a TTY or `--strip-cwd-prefix` is set, see #760 and #861 (@jcaplan)
 - Set default path separator to `/` in MSYS, see #537 and #730 (@aswild)
 - fd cannot search files under a RAM disk, see #752
 - fd doesn't show substituted drive on Windows, see #365
@@ -24,6 +385,7 @@
 - Support `--list-details` on more platforms (like BusyBox), see #783
 - The filters `--owner`, `--size`, and `--changed-{within,before}` now apply to symbolic links
   themselves, rather than the link target, except when `--follow` is specified; see #863
+- Change time comparisons to be exclusive, see #794 (@jacobmischka)
 
 ## Changes
 
@@ -32,6 +394,7 @@
 ## Other
 
 - Many documentation updates
+
 
 # v8.2.1
 

@@ -5,13 +5,13 @@ use crate::filesystem::strip_current_dir;
 
 /// Removes the parent component of the path
 pub fn basename(path: &Path) -> &OsStr {
-    path.file_name().unwrap_or_else(|| path.as_os_str())
+    path.file_name().unwrap_or(path.as_os_str())
 }
 
 /// Removes the extension from the path
 pub fn remove_extension(path: &Path) -> OsString {
     let dirname = dirname(path);
-    let stem = path.file_stem().unwrap_or_else(|| path.as_os_str());
+    let stem = path.file_stem().unwrap_or(path.as_os_str());
 
     let path = PathBuf::from(dirname).join(stem);
 
@@ -34,10 +34,10 @@ pub fn dirname(path: &Path) -> OsString {
 #[cfg(test)]
 mod path_tests {
     use super::*;
-    use std::path::MAIN_SEPARATOR;
+    use std::path::MAIN_SEPARATOR_STR;
 
     fn correct(input: &str) -> String {
-        input.replace('/', &MAIN_SEPARATOR.to_string())
+        input.replace('/', MAIN_SEPARATOR_STR)
     }
 
     macro_rules! func_tests {

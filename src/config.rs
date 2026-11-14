@@ -3,20 +3,18 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use lscolors::LsColors;
 use regex::bytes::RegexSet;
 
-use crate::exec::CommandTemplate;
+use crate::exec::CommandSet;
 use crate::filetypes::FileTypes;
 #[cfg(unix)]
 use crate::filter::OwnerFilter;
 use crate::filter::{SizeFilter, TimeFilter};
+use crate::fmt::FormatTemplate;
 
 /// Configuration options for *fd*.
 pub struct Config {
-    /// Whether the search is case-sensitive or case-insensitive.
-    pub case_sensitive: bool,
-
-    /// Whether to search within the full file path or just the base name (filename or directory
-    /// name).
-    pub search_full_path: bool,
+    /// Cached current working directory for absolute path construction.
+    /// Populated when `--full-path` is set; `None` means search by filename only.
+    pub full_path_base: Option<PathBuf>,
 
     /// Whether to ignore hidden files and directories (or not).
     pub ignore_hidden: bool,
@@ -29,6 +27,9 @@ pub struct Config {
 
     /// Whether to respect VCS ignore files (`.gitignore`, ..) or not.
     pub read_vcsignore: bool,
+
+    /// Whether to require a `.git` directory to respect gitignore files.
+    pub require_git_to_read_vcsignore: bool,
 
     /// Whether to respect the global ignore file or not.
     pub read_global_ignore: bool,
@@ -71,6 +72,7 @@ pub struct Config {
     pub ls_colors: Option<LsColors>,
 
     /// Whether or not we are writing to an interactive terminal
+    #[cfg_attr(not(unix), allow(unused))]
     pub interactive_terminal: bool,
 
     /// The type of file to search for. If set to `None`, all file types are displayed. If
@@ -82,8 +84,11 @@ pub struct Config {
     /// The value (if present) will be a lowercase string without leading dots.
     pub extensions: Option<RegexSet>,
 
+    /// A format string to use to format results, similarly to exec
+    pub format: Option<FormatTemplate>,
+
     /// If a value is supplied, each item found will be used to generate and execute commands.
-    pub command: Option<Arc<CommandTemplate>>,
+    pub command: Option<Arc<CommandSet>>,
 
     /// Maximum number of search results to pass to each `command`. If zero, the number is
     /// unlimited.
@@ -111,6 +116,25 @@ pub struct Config {
     /// The separator used to print file paths.
     pub path_separator: Option<String>,
 
+    /// The actual separator, either the system default separator or `path_separator`
+    pub actual_path_separator: String,
+
     /// The maximum number of search results
     pub max_results: Option<usize>,
+
+    /// Whether or not to strip the './' prefix for search results
+    pub strip_cwd_prefix: bool,
+
+    /// Whether or not to use hyperlinks on paths
+    pub hyperlink: bool,
+
+    /// Names that should stop traversal down their parent. (e.g. https://bford.info/cachedir/).
+    pub ignore_contain: Vec<String>,
+}
+
+impl Config {
+    /// Check whether results are being printed.
+    pub fn is_printing(&self) -> bool {
+        self.command.is_none()
+    }
 }

@@ -1,48 +1,63 @@
-mod app;
-mod config;
+// needs to be first because it defines a macro
+#[macro_use]
 mod error;
+
+mod cli;
+mod config;
+mod dir_entry;
 mod exec;
 mod exit_codes;
 mod filesystem;
 mod filetypes;
 mod filter;
+mod fmt;
+mod hyperlink;
 mod output;
+mod patterns;
 mod regex_helper;
+mod sanitize;
 mod walk;
 
 use std::env;
-use std::path::{Path, PathBuf};
-use std::process;
+use std::io::IsTerminal;
+use std::path::Path;
 use std::sync::Arc;
-use std::time;
 
-use anyhow::{anyhow, Context, Result};
-use atty::Stream;
-use globset::GlobBuilder;
+use anyhow::{Context, Result, anyhow, bail};
+use clap::{CommandFactory, Parser};
 use lscolors::LsColors;
-use normpath::PathExt;
-use regex::bytes::{RegexBuilder, RegexSetBuilder};
+use patterns::PatternType;
+use regex::bytes::RegexSetBuilder;
 
+use crate::cli::{ColorWhen, HyperlinkWhen, Opts};
 use crate::config::Config;
-use crate::error::print_error;
-use crate::exec::CommandTemplate;
+use crate::exec::CommandSet;
 use crate::exit_codes::ExitCode;
 use crate::filetypes::FileTypes;
 #[cfg(unix)]
 use crate::filter::OwnerFilter;
-use crate::filter::{SizeFilter, TimeFilter};
-use crate::regex_helper::{pattern_has_uppercase_char, pattern_matches_strings_with_leading_dot};
+use crate::filter::TimeFilter;
+use crate::patterns::{
+    build_patterns, pattern_has_uppercase_char, patterns_match_strings_with_leading_dots,
+};
 
 // We use jemalloc for performance reasons, see https://github.com/sharkdp/fd/pull/481
 // FIXME: re-enable jemalloc on macOS, see comment in Cargo.toml file for more infos
+// This has to be kept in sync with the Cargo.toml file section that declares a
+// dependency on tikv-jemallocator.
 #[cfg(all(
     not(windows),
     not(target_os = "android"),
     not(target_os = "macos"),
-    not(target_env = "musl")
+    not(target_os = "freebsd"),
+    not(target_os = "openbsd"),
+    not(target_os = "illumos"),
+    not(all(target_env = "musl", target_pointer_width = "32")),
+    not(target_arch = "riscv64"),
+    feature = "use-jemalloc"
 ))]
 #[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 // vivid --color-mode 8-bit generate molokai
 const DEFAULT_LS_COLORS: &str = "
@@ -54,146 +69,170 @@ fn main() {
     let result = run();
     match result {
         Ok(exit_code) => {
-            process::exit(exit_code.into());
+            exit_code.exit();
         }
         Err(err) => {
+            // NB: we use eprintln directly instead of print_error!() because
+            // we sanitize anyhow errors at the generation site
             eprintln!("[fd error]: {:#}", err);
-            process::exit(ExitCode::GeneralError.into());
+            ExitCode::GeneralError.exit();
         }
     }
 }
 
 fn run() -> Result<ExitCode> {
-    let matches = app::build_app().get_matches_from(env::args_os());
+    let mut opts = Opts::parse();
 
-    set_working_dir(&matches)?;
-    let current_directory = Path::new(".");
-    ensure_current_directory_exists(current_directory)?;
-    let search_paths = extract_search_paths(&matches, current_directory)?;
+    #[cfg(feature = "completions")]
+    if let Some(shell) = opts.gen_completions()? {
+        return print_completions(shell);
+    }
 
-    let pattern = extract_search_pattern(&matches)?;
-    ensure_search_pattern_is_not_a_path(&matches, pattern)?;
-    let pattern_regex = build_pattern_regex(&matches, pattern)?;
+    set_working_dir(&opts)?;
+    let search_paths = opts.search_paths()?;
+    if search_paths.is_empty() {
+        bail!("No valid search paths given.");
+    }
 
-    let config = construct_config(matches, &pattern_regex)?;
-    ensure_use_hidden_option_for_leading_dot_pattern(&config, &pattern_regex)?;
-    let re = build_regex(pattern_regex, &config)?;
-    walk::scan(&search_paths, Arc::new(re), Arc::new(config))
+    ensure_search_pattern_is_not_a_path(&opts)?;
+    let mut patterns = opts.exprs.take().unwrap_or(Vec::new());
+    if let Some(pattern) = opts.pattern.take() {
+        patterns.push(pattern);
+    }
+
+    let pattern_type = determine_pattern_type(&opts);
+    // The search will be case-sensitive if the command line flag is set or
+    // if any of the patterns has an uppercase character (smart case).
+    let ignore_case = opts.ignore_case
+        || !(opts.case_sensitive
+            || patterns
+                .iter()
+                .any(|pat| pattern_has_uppercase_char(pattern_type, pat)));
+
+    let config = construct_config(opts)?;
+
+    ensure_use_hidden_option_for_leading_dot_pattern(&patterns, &config, pattern_type)?;
+
+    let matcher = build_patterns(patterns, pattern_type, ignore_case)?;
+
+    walk::scan(&search_paths, matcher, config)
 }
 
-fn set_working_dir(matches: &clap::ArgMatches) -> Result<()> {
-    if let Some(base_directory) = matches.value_of_os("base-directory") {
-        let base_directory = Path::new(base_directory);
+#[cfg(feature = "completions")]
+#[cold]
+fn print_completions(shell: clap_complete::Shell) -> Result<ExitCode> {
+    // The program name is the first argument.
+    let first_arg = env::args().next();
+    let program_name = first_arg
+        .as_ref()
+        .map(Path::new)
+        .and_then(|path| path.file_stem())
+        .and_then(|file| file.to_str())
+        .unwrap_or("fd");
+    let mut cmd = Opts::command();
+    cmd.build();
+    clap_complete::generate(shell, &mut cmd, program_name, &mut std::io::stdout());
+    Ok(ExitCode::Success)
+}
+
+fn set_working_dir(opts: &Opts) -> Result<()> {
+    if let Some(ref base_directory) = opts.base_directory {
         if !filesystem::is_existing_directory(base_directory) {
             return Err(anyhow!(
-                "The '--base-directory' path '{}' is not a directory.",
-                base_directory.to_string_lossy()
+                "The '--base-directory' path {:?} is not a directory.",
+                base_directory.to_string_lossy().as_ref()
             ));
         }
         env::set_current_dir(base_directory).with_context(|| {
             format!(
-                "Could not set '{}' as the current working directory",
-                base_directory.to_string_lossy()
+                "Could not set {:?} as the current working directory",
+                base_directory.to_string_lossy().as_ref()
             )
         })?;
     }
     Ok(())
 }
 
-fn ensure_current_directory_exists(current_directory: &Path) -> Result<()> {
-    if filesystem::is_existing_directory(current_directory) {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Could not retrieve current directory (has it been deleted?)."
-        ))
+/// Detect if the user accidentally supplied a path instead of a search pattern.
+///
+/// Without `--full-path`, fd matches patterns against file names, so any pattern
+/// containing a path separator can never match. This applies to the primary
+/// positional pattern *and* to every `--and` pattern, since all of them are
+/// chained together and matched against the file name (see `run`). Two cases per
+/// pattern are worth a friendly error rather than silent "no results":
+///
+/// 1. The pattern contains '/'. '/' is always a path separator (including on
+///    Windows) and has no regex meaning, so flagging it is safe and catches the
+///    common Linux/macOS mistake of pasting a full path as the pattern.
+/// 2. On Windows only, the pattern contains the native `\` separator *and*
+///    names an existing directory on disk. We can't treat `\` as a pure
+///    path-separator signal there because it is also the regex escape char,
+///    so valid regex patterns like `\Ac` or `\d+` must still run. Requiring
+///    that the pattern resolves to a real directory avoids those false
+///    positives while preserving the legacy diagnostic for operators who
+///    literally typed a directory path.
+///
+/// See https://github.com/sharkdp/fd/issues/1873.
+fn ensure_search_pattern_is_not_a_path(opts: &Opts) -> Result<()> {
+    if opts.full_path {
+        return Ok(());
     }
+    if let Some(ref pattern) = opts.pattern {
+        // Check the primary pattern and every `--and` pattern. They are all matched
+        // against the file name (see `run`), so a path separator in any of them is
+        // the same silent "no results" footgun.
+        for pattern in std::iter::once(pattern).chain(opts.exprs.iter().flatten()) {
+            ensure_single_search_pattern_is_not_a_path(pattern)?;
+        }
+    }
+    Ok(())
 }
 
-fn extract_search_pattern<'a>(matches: &'a clap::ArgMatches) -> Result<&'a str> {
-    let pattern = matches
-        .value_of_os("pattern")
-        .map(|p| {
-            p.to_str()
-                .ok_or_else(|| anyhow!("The search pattern includes invalid UTF-8 sequences."))
-        })
-        .transpose()?
-        .unwrap_or("");
-    Ok(pattern)
-}
+/// Apply the path-separator diagnostic to a single pattern. See
+/// [`ensure_search_pattern_is_not_a_path`] for the rationale of each case.
+fn ensure_single_search_pattern_is_not_a_path(pattern: &str) -> Result<()> {
+    // Start with the cheap check: '/' is always a path separator, including on
+    // Windows, and has no regex meaning, so flagging it is safe and catches the
+    // Linux/macOS mistake of pasting a full path as the pattern.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut should_warn = pattern.contains('/');
 
-fn extract_search_paths(
-    matches: &clap::ArgMatches,
-    current_directory: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mut search_paths = matches
-        .values_of_os("path")
-        .or_else(|| matches.values_of_os("search-path"))
-        .map_or_else(
-            || vec![current_directory.to_path_buf()],
-            |paths| {
-                paths
-                    .filter_map(|path| {
-                        let path_buffer = PathBuf::from(path);
-                        if filesystem::is_existing_directory(&path_buffer) {
-                            Some(path_buffer)
-                        } else {
-                            print_error(format!(
-                                "Search path '{}' is not a directory.",
-                                path_buffer.to_string_lossy()
-                            ));
-                            None
-                        }
-                    })
-                    .collect()
-            },
-        );
-    if search_paths.is_empty() {
-        return Err(anyhow!("No valid search paths given."));
-    }
-    if matches.is_present("absolute-path") {
-        update_to_absolute_paths(&mut search_paths);
-    }
-    Ok(search_paths)
-}
-
-fn update_to_absolute_paths(search_paths: &mut [PathBuf]) {
-    for buffer in search_paths.iter_mut() {
-        *buffer = filesystem::absolute_path(buffer.normalize().unwrap().as_path()).unwrap();
-    }
-}
-
-/// Detect if the user accidentally supplied a path instead of a search pattern
-fn ensure_search_pattern_is_not_a_path(matches: &clap::ArgMatches, pattern: &str) -> Result<()> {
-    if !matches.is_present("full-path")
-        && pattern.contains(std::path::MAIN_SEPARATOR)
-        && Path::new(pattern).is_dir()
+    // On Windows we additionally accept the native `\` separator, but only when
+    // the pattern actually resolves to an existing directory - `\` is also the
+    // regex escape char there, so valid patterns like `\Ac` or `\d+` must still
+    // run. The is_dir syscall is only needed when `should_warn` is still false,
+    // so short-circuit via `||` to avoid the stat call on the happy path.
+    #[cfg(windows)]
     {
+        should_warn = should_warn
+            || (pattern.contains(std::path::MAIN_SEPARATOR) && Path::new(pattern).is_dir());
+    }
+
+    if should_warn {
         Err(anyhow!(
-            "The search pattern '{pattern}' contains a path-separation character ('{sep}') \
+            "The search pattern '{pattern}' contains a path-separation character \
              and will not lead to any search results.\n\n\
              If you want to search for all files inside the '{pattern}' directory, use a match-all pattern:\n\n  \
              fd . '{pattern}'\n\n\
              Instead, if you want your pattern to match the full file path, use:\n\n  \
              fd --full-path '{pattern}'",
             pattern = pattern,
-            sep = std::path::MAIN_SEPARATOR,
         ))
     } else {
         Ok(())
     }
 }
 
-fn build_pattern_regex(matches: &clap::ArgMatches, pattern: &str) -> Result<String> {
-    Ok(if matches.is_present("glob") && !pattern.is_empty() {
-        let glob = GlobBuilder::new(pattern).literal_separator(true).build()?;
-        glob.regex().to_owned()
-    } else if matches.is_present("fixed-strings") {
-        // Treat pattern as literal string if '--fixed-strings' is used
-        regex::escape(pattern)
+fn determine_pattern_type(opts: &Opts) -> PatternType {
+    if opts.glob {
+        PatternType::Glob
+    } else if opts.exact {
+        PatternType::Exact
+    } else if opts.fixed_strings {
+        PatternType::Fixed
     } else {
-        String::from(pattern)
-    })
+        PatternType::Regex
+    }
 }
 
 fn check_path_separator_length(path_separator: Option<&str>) -> Result<()> {
@@ -210,37 +249,36 @@ fn check_path_separator_length(path_separator: Option<&str>) -> Result<()> {
     }
 }
 
-fn construct_config(matches: clap::ArgMatches, pattern_regex: &str) -> Result<Config> {
-    // The search will be case-sensitive if the command line flag is set or
-    // if the pattern has an uppercase character (smart case).
-    let case_sensitive = !matches.is_present("ignore-case")
-        && (matches.is_present("case-sensitive") || pattern_has_uppercase_char(pattern_regex));
-
-    let path_separator = matches
-        .value_of("path-separator")
-        .map_or_else(filesystem::default_path_separator, |s| Some(s.to_owned()));
+fn construct_config(mut opts: Opts) -> Result<Config> {
+    let path_separator = opts
+        .path_separator
+        .take()
+        .or_else(filesystem::default_path_separator);
+    let actual_path_separator = path_separator
+        .clone()
+        .unwrap_or_else(|| std::path::MAIN_SEPARATOR.to_string());
     check_path_separator_length(path_separator.as_deref())?;
 
-    let size_limits = extract_size_limits(&matches)?;
-    let time_constraints = extract_time_constraints(&matches)?;
+    let size_limits = std::mem::take(&mut opts.size);
+    let time_constraints = extract_time_constraints(&opts)?;
     #[cfg(unix)]
-    let owner_constraint = matches
-        .value_of("owner")
-        .map(OwnerFilter::from_string)
-        .transpose()?
-        .flatten();
+    let owner_constraint: Option<OwnerFilter> = opts.owner.and_then(OwnerFilter::filter_ignore);
 
     #[cfg(windows)]
     let ansi_colors_support =
-        ansi_term::enable_ansi_support().is_ok() || std::env::var_os("TERM").is_some();
+        nu_ansi_term::enable_ansi_support().is_ok() || std::env::var_os("TERM").is_some();
     #[cfg(not(windows))]
     let ansi_colors_support = true;
 
-    let interactive_terminal = atty::is(Stream::Stdout);
-    let colored_output = match matches.value_of("color") {
-        Some("always") => true,
-        Some("never") => false,
-        _ => ansi_colors_support && env::var_os("NO_COLOR").is_none() && interactive_terminal,
+    let interactive_terminal = std::io::stdout().is_terminal();
+
+    let colored_output = match opts.color {
+        ColorWhen::Always => true,
+        ColorWhen::Never => false,
+        ColorWhen::Auto => {
+            let no_color = env::var_os("NO_COLOR").is_some_and(|x| !x.is_empty());
+            ansi_colors_support && !no_color && interactive_terminal
+        }
     };
 
     let ls_colors = if colored_output {
@@ -248,98 +286,53 @@ fn construct_config(matches: clap::ArgMatches, pattern_regex: &str) -> Result<Co
     } else {
         None
     };
-    let command = extract_command(&matches, path_separator.as_deref(), colored_output)?;
+    let hyperlink = match opts.hyperlink {
+        HyperlinkWhen::Always => true,
+        HyperlinkWhen::Never => false,
+        HyperlinkWhen::Auto => colored_output,
+    };
+    let command = extract_command(&mut opts, colored_output)?;
+    let has_command = command.is_some();
+
+    let full_path_base = if opts.full_path {
+        Some(env::current_dir().context(
+            "Could not determine current directory. \
+             This is required for --full-path.",
+        )?)
+    } else {
+        None
+    };
 
     Ok(Config {
-        case_sensitive,
-        search_full_path: matches.is_present("full-path"),
-        ignore_hidden: !(matches.is_present("hidden")
-            || matches.occurrences_of("rg-alias-hidden-ignore") >= 2),
-        read_fdignore: !(matches.is_present("no-ignore")
-            || matches.is_present("rg-alias-hidden-ignore")),
-        read_vcsignore: !(matches.is_present("no-ignore")
-            || matches.is_present("rg-alias-hidden-ignore")
-            || matches.is_present("no-ignore-vcs")),
-        read_parent_ignore: !(matches.is_present("no-ignore")
-            || matches.is_present("rg-alias-hidden-ignore")
-            || matches.is_present("no-ignore-vcs")
-            || matches.is_present("no-ignore-parent")),
-        read_global_ignore: !(matches.is_present("no-ignore")
-            || matches.is_present("rg-alias-hidden-ignore")
-            || matches.is_present("no-global-ignore-file")),
-        follow_links: matches.is_present("follow"),
-        one_file_system: matches.is_present("one-file-system"),
-        null_separator: matches.is_present("null_separator"),
-        quiet: matches.is_present("quiet"),
-        max_depth: matches
-            .value_of("max-depth")
-            .or_else(|| matches.value_of("rg-depth"))
-            .or_else(|| matches.value_of("exact-depth"))
-            .map(|n| n.parse::<usize>())
-            .transpose()
-            .context("Failed to parse argument to --max-depth/--exact-depth")?,
-        min_depth: matches
-            .value_of("min-depth")
-            .or_else(|| matches.value_of("exact-depth"))
-            .map(|n| n.parse::<usize>())
-            .transpose()
-            .context("Failed to parse argument to --min-depth/--exact-depth")?,
-        prune: matches.is_present("prune"),
-        threads: std::cmp::max(
-            matches
-                .value_of("threads")
-                .map(|n| n.parse::<usize>())
-                .transpose()
-                .context("Failed to parse number of threads")?
-                .map(|n| {
-                    if n > 0 {
-                        Ok(n)
-                    } else {
-                        Err(anyhow!("Number of threads must be positive."))
-                    }
-                })
-                .transpose()?
-                .unwrap_or_else(num_cpus::get),
-            1,
-        ),
-        max_buffer_time: matches
-            .value_of("max-buffer-time")
-            .map(|n| n.parse::<u64>())
-            .transpose()
-            .context("Failed to parse max. buffer time argument")?
-            .map(time::Duration::from_millis),
+        full_path_base,
+        ignore_hidden: !opts.hidden,
+        read_fdignore: !opts.no_ignore,
+        read_vcsignore: !(opts.no_ignore || opts.no_ignore_vcs),
+        require_git_to_read_vcsignore: !opts.no_require_git,
+        read_parent_ignore: !opts.no_ignore_parent,
+        read_global_ignore: !(opts.no_ignore || opts.no_global_ignore_file),
+        follow_links: opts.follow,
+        one_file_system: opts.one_file_system,
+        null_separator: opts.null_separator,
+        quiet: opts.quiet,
+        max_depth: opts.max_depth(),
+        min_depth: opts.min_depth(),
+        prune: opts.prune,
+        threads: opts.threads().get(),
+        max_buffer_time: opts.max_buffer_time,
         ls_colors,
+        hyperlink,
         interactive_terminal,
-        file_types: matches.values_of("file-type").map(|values| {
-            let mut file_types = FileTypes::default();
-            for value in values {
-                match value {
-                    "f" | "file" => file_types.files = true,
-                    "d" | "directory" => file_types.directories = true,
-                    "l" | "symlink" => file_types.symlinks = true,
-                    "x" | "executable" => {
-                        file_types.executables_only = true;
-                        file_types.files = true;
-                    }
-                    "e" | "empty" => file_types.empty_only = true,
-                    "s" | "socket" => file_types.sockets = true,
-                    "p" | "pipe" => file_types.pipes = true,
-                    _ => unreachable!(),
-                }
-            }
-
-            // If only 'empty' was specified, search for both files and directories:
-            if file_types.empty_only && !(file_types.files || file_types.directories) {
-                file_types.files = true;
-                file_types.directories = true;
-            }
-
-            file_types
-        }),
-        extensions: matches
-            .values_of("extension")
+        file_types: opts
+            .filetype
+            .as_ref()
+            .map(|values| FileTypes::from_types(values)),
+        extensions: opts
+            .extensions
+            .as_ref()
             .map(|exts| {
                 let patterns = exts
+                    .iter()
                     .map(|e| e.trim_start_matches('.'))
                     .map(|e| format!(r".\.{}$", regex::escape(e)));
                 RegexSetBuilder::new(patterns)
@@ -347,81 +340,52 @@ fn construct_config(matches: clap::ArgMatches, pattern_regex: &str) -> Result<Co
                     .build()
             })
             .transpose()?,
+        format: opts
+            .format
+            .as_deref()
+            .map(crate::fmt::FormatTemplate::parse),
         command: command.map(Arc::new),
-        batch_size: matches
-            .value_of("batch-size")
-            .map(|n| n.parse::<usize>())
-            .transpose()
-            .context("Failed to parse --batch-size argument")?
-            .unwrap_or_default(),
-        exclude_patterns: matches
-            .values_of("exclude")
-            .map(|v| v.map(|p| String::from("!") + p).collect())
-            .unwrap_or_else(Vec::new),
-        ignore_files: matches
-            .values_of("ignore-file")
-            .map(|vs| vs.map(PathBuf::from).collect())
-            .unwrap_or_else(Vec::new),
+        batch_size: opts.batch_size,
+        exclude_patterns: opts.exclude.iter().map(|p| String::from("!") + p).collect(),
+        ignore_files: std::mem::take(&mut opts.ignore_file),
         size_constraints: size_limits,
         time_constraints,
         #[cfg(unix)]
         owner_constraint,
-        show_filesystem_errors: matches.is_present("show-errors"),
+        show_filesystem_errors: opts.show_errors,
         path_separator,
-        max_results: matches
-            .value_of("max-results")
-            .map(|n| n.parse::<usize>())
-            .transpose()
-            .context("Failed to parse --max-results argument")?
-            .filter(|&n| n > 0)
-            .or_else(|| {
-                if matches.is_present("max-one-result") {
-                    Some(1)
-                } else {
-                    None
-                }
-            }),
+        actual_path_separator,
+        max_results: opts.max_results(),
+        strip_cwd_prefix: opts.strip_cwd_prefix(|| !(opts.null_separator || has_command)),
+        ignore_contain: opts.ignore_contain,
     })
 }
 
-fn extract_command(
-    matches: &clap::ArgMatches,
-    path_separator: Option<&str>,
-    colored_output: bool,
-) -> Result<Option<CommandTemplate>> {
-    None.or_else(|| {
-        matches.values_of("exec").map(|args| {
-            Ok(CommandTemplate::new(
-                args,
-                path_separator.map(str::to_string),
-            ))
+fn extract_command(opts: &mut Opts, colored_output: bool) -> Result<Option<CommandSet>> {
+    opts.exec
+        .command
+        .take()
+        .map(Ok)
+        .or_else(|| {
+            if !opts.list_details {
+                return None;
+            }
+
+            let res = determine_ls_command(colored_output)
+                .map(|cmd| CommandSet::new_batch([cmd]).unwrap());
+            Some(res)
         })
-    })
-    .or_else(|| {
-        matches
-            .values_of("exec-batch")
-            .map(|args| CommandTemplate::new_batch(args, path_separator.map(str::to_string)))
-    })
-    .or_else(|| {
-        if !matches.is_present("list-details") {
-            return None;
-        }
-
-        let color = matches.value_of("color").unwrap_or("auto");
-        let color_arg = format!("--color={}", color);
-
-        let res = determine_ls_command(&color_arg, colored_output).map(|cmd| {
-            CommandTemplate::new_batch(cmd, path_separator.map(str::to_string)).unwrap()
-        });
-
-        Some(res)
-    })
-    .transpose()
+        .transpose()
 }
 
-fn determine_ls_command(color_arg: &str, colored_output: bool) -> Result<Vec<&str>> {
+fn determine_ls_command(colored_output: bool) -> Result<Vec<&'static str>> {
     #[allow(unused)]
     let gnu_ls = |command_name| {
+        let color_arg = if colored_output {
+            "--color=always"
+        } else {
+            "--color=never"
+        };
         // Note: we use short options here (instead of --long-options) to support more
         // platforms (like BusyBox).
         vec![
@@ -443,7 +407,7 @@ fn determine_ls_command(color_arg: &str, colored_output: bool) -> Result<Vec<&st
             // Assume ls is GNU ls
             gnu_ls("ls")
         } else {
-            // MacOS, DragonFlyBSD, FreeBSD
+            // macOS, DragonFlyBSD, FreeBSD
             use std::process::{Command, Stdio};
 
             // Use GNU ls, if available (support for --color=auto, better LS_COLORS support)
@@ -498,21 +462,10 @@ fn determine_ls_command(color_arg: &str, colored_output: bool) -> Result<Vec<&st
     Ok(cmd)
 }
 
-fn extract_size_limits(matches: &clap::ArgMatches) -> Result<Vec<SizeFilter>> {
-    matches.values_of("size").map_or(Ok(Vec::new()), |vs| {
-        vs.map(|sf| {
-            SizeFilter::from_string(sf)
-                .ok_or_else(|| anyhow!("'{}' is not a valid size constraint. See 'fd --help'.", sf))
-        })
-        .collect::<Result<Vec<_>>>()
-    })
-}
-
-fn extract_time_constraints(matches: &clap::ArgMatches) -> Result<Vec<TimeFilter>> {
-    let now = time::SystemTime::now();
+fn extract_time_constraints(opts: &Opts) -> Result<Vec<TimeFilter>> {
     let mut time_constraints: Vec<TimeFilter> = Vec::new();
-    if let Some(t) = matches.value_of("changed-within") {
-        if let Some(f) = TimeFilter::after(&now, t) {
+    if let Some(ref t) = opts.changed_within {
+        if let Some(f) = TimeFilter::after(t) {
             time_constraints.push(f);
         } else {
             return Err(anyhow!(
@@ -521,8 +474,8 @@ fn extract_time_constraints(matches: &clap::ArgMatches) -> Result<Vec<TimeFilter
             ));
         }
     }
-    if let Some(t) = matches.value_of("changed-before") {
-        if let Some(f) = TimeFilter::before(&now, t) {
+    if let Some(ref t) = opts.changed_before {
+        if let Some(f) = TimeFilter::before(t) {
             time_constraints.push(f);
         } else {
             return Err(anyhow!(
@@ -535,32 +488,20 @@ fn extract_time_constraints(matches: &clap::ArgMatches) -> Result<Vec<TimeFilter
 }
 
 fn ensure_use_hidden_option_for_leading_dot_pattern(
+    patterns: &[String],
     config: &Config,
-    pattern_regex: &str,
+    pattern_type: PatternType,
 ) -> Result<()> {
-    if cfg!(unix) && config.ignore_hidden && pattern_matches_strings_with_leading_dot(pattern_regex)
+    if cfg!(unix)
+        && config.ignore_hidden
+        && patterns_match_strings_with_leading_dots(patterns, pattern_type)
     {
         Err(anyhow!(
-            "The pattern seems to only match files with a leading dot, but hidden files are \
+            "The pattern(s) seems to only match files with a leading dot, but hidden files are \
             filtered by default. Consider adding -H/--hidden to search hidden files as well \
-            or adjust your search pattern."
+            or adjust your search pattern(s)."
         ))
     } else {
         Ok(())
     }
-}
-
-fn build_regex(pattern_regex: String, config: &Config) -> Result<regex::bytes::Regex> {
-    RegexBuilder::new(&pattern_regex)
-        .case_insensitive(!config.case_sensitive)
-        .dot_matches_new_line(true)
-        .build()
-        .map_err(|e| {
-            anyhow!(
-                "{}\n\nNote: You can use the '--fixed-strings' option to search for a \
-                 literal string instead of a regular expression. Alternatively, you can \
-                 also use the '--glob' option to match on a glob pattern.",
-                e.to_string()
-            )
-        })
 }
